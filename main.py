@@ -2,6 +2,7 @@ from random import random, choice
 import os
 import datetime
 from collections import deque
+import math
 import statistics as stt
 import numpy as np
 import tensorflow as tf
@@ -58,7 +59,7 @@ def my_dqn_agent(observation, configuration):
     return action
 
 def my_dqn_agent_exploring(observation, configuration):
-    if lets_explore > random():
+    if next(lets_explore) > random():
         first_row = observation.board[:configuration.columns]
         actions = [pos for pos in range(configuration.columns) if first_row[pos] == 0]
         action = choice(actions)
@@ -107,14 +108,12 @@ class MyDQN(Model):
     def __init__(self, conf):
         super().__init__()
         self.no = conf.columns
-        self.conv1 = Conv2D(32, 5, padding='same', activation='relu')
-        self.conv2 = Conv2D(64, 4, padding='same', activation='relu')
-        self.conv3 = Conv2D(128, 3, padding='same', activation='relu')
-        self.conv4 = Conv2D(256, 2, padding='same', activation='relu')
+        self.conv1 = Conv2D(1024, 2, padding='valid', activation='relu')
+        self.conv2 = Conv2D(2048, 2, padding='valid', activation='relu')
         self.flatten = Flatten()
-        self.d1 = Dense(256, activation='relu')
-        self.d2 = Dense(128, activation='relu')
-        self.d3 = Dense(64, activation='relu')
+        self.d1 = Dense(2048, activation='relu')
+        self.d2 = Dense(512, activation='relu')
+        self.d3 = Dense(128, activation='relu')
         self.d4 = Dense(32, activation='relu')
         self.d5 = Dense(self.no, activation=None)
         self.act = lambda x: np.argmax(x, axis=-1)
@@ -124,8 +123,6 @@ class MyDQN(Model):
     def call(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
         x = self.flatten(x)
         x = self.d1(x)
         x = self.d2(x)
@@ -199,10 +196,15 @@ memory_trainer = env.train([None, "random"])
 memory = load_memory(memory_trainer, env.configuration, batch=batch, max_size=1000000)
 trainer1p = env.train([None, my_dqn_agent])
 trainer2p = env.train([my_dqn_agent, None])
-lets_explore = 0.2
+def exploring_gen(min_exp):
+    i = 0
+    while True:
+        yield min_exp + (1-min_exp)*math.e**-(i/10000)
+        i += 1
+lets_explore = exploring_gen(0.2)
 total_epochs = 0
 weights_file_save = load_model(model)
-while False:
+while True:
     template = "Epoch {:02}/{}({}), Loss: {}, Moves: {}"
     # for epoch in tqdm.tqdm(range(EPOCHS)):
     for epoch in range(EPOCHS):
