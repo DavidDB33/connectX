@@ -1,4 +1,7 @@
 from random import random, choice
+import matplotlib.pyplot as plt
+import copy
+import sys
 import os
 import datetime
 from collections import deque
@@ -31,6 +34,7 @@ def raw2tensor(experiences):
     return tf.convert_to_tensor(states), tf.convert_to_tensor(actions), tf.convert_to_tensor(rewards), tf.convert_to_tensor(next_states)
 
 def swap_board_if_2p(observation):
+    observation = copy.deepcopy(observation)
     if observation.mark == 2:
         swap_token = {0:0,1:2,2:1}
         observation.board = [swap_token[cell] for cell in observation.board]
@@ -58,7 +62,7 @@ def my_dqn_agent(observation, configuration):
     action = int(model.act(qvalues))
     return action
 
-def my_dqn_agent_exploring(observation, configuration):
+def my_dqn_agent_exploring(observation, configuration, lets_explore):
     if next(lets_explore) > random():
         first_row = observation.board[:configuration.columns]
         actions = [pos for pos in range(configuration.columns) if first_row[pos] == 0]
@@ -70,7 +74,7 @@ def my_dqn_agent_exploring(observation, configuration):
         action = int(model.act(qvalues))
     return action
 
-def play(agent_1, agent_2, render = True):
+def start_match(agent_1, agent_2, render = True):
     if agent_2 == 'random':
         data = [env.run([agent_1, agent_2]) for i in range(10)]
         wins = sum(d[-1][0]['reward']==1. for d in data)
@@ -106,7 +110,7 @@ class Memory():
 
 class MyDQN(Model):
     def __init__(self, conf):
-        super().__init__()
+        super(MyDQN, self).__init__()
         self.no = conf.columns
         self.conv1 = Conv2D(1024, 2, padding='valid', activation='relu')
         self.conv2 = Conv2D(2048, 2, padding='valid', activation='relu')
@@ -134,6 +138,8 @@ class MyDQN(Model):
 alpha = 0.1
 gamma = 1.
 model = MyDQN(env.configuration)
+a,b,c = 3,env.configuration.rows,env.configuration.columns # Dimensions
+model(np.zeros(a*b*c).astype(np.float32).reshape(1,a,b,c)) # This line is to compile just-in-time the model and permit to load the weights
 loss_object = tf.keras.losses.MeanSquaredError()
 optimizer = tf.keras.optimizers.Nadam()
 train_loss = tf.keras.metrics.Mean(name='train_loss')
@@ -190,55 +196,83 @@ def load_model(model):
     return os.path.join(weights_path, weights_name_save)
 
 
-EPOCHS = 100
-batch = 20
-memory_trainer = env.train([None, "random"])
-memory = load_memory(memory_trainer, env.configuration, batch=batch, max_size=1000000)
-trainer1p = env.train([None, my_dqn_agent])
-trainer2p = env.train([my_dqn_agent, None])
-def exploring_gen(min_exp):
-    i = 0
+def train(weights_file_save_path):
+    EPOCHS = 100
+    batch = 20
+    memory_trainer = env.train([None, "random"])
+    memory = load_memory(memory_trainer, env.configuration, batch=batch, max_size=1000000)
+    trainer1p = env.train([None, my_dqn_agent])
+    trainer2p = env.train([my_dqn_agent, None])
+    def exploring_gen(min_exp):
+        i = 0
+        while True:
+            yield min_exp + (1-min_exp)*math.e**-(i/10000)
+            i += 1
+    lets_explore = exploring_gen(0.2)
+    total_epochs = 0
     while True:
-        yield min_exp + (1-min_exp)*math.e**-(i/10000)
-        i += 1
-lets_explore = exploring_gen(0.2)
-total_epochs = 0
-weights_file_save = load_model(model)
-while True:
-    template = "Epoch {:02}/{}({}), Loss: {}, Moves: {}"
-    # for epoch in tqdm.tqdm(range(EPOCHS)):
-    for epoch in range(EPOCHS):
-        total_epochs += 1
-        moves = 0
-        done = False
-        trainer = choice([trainer1p, trainer2p])
-        observation = trainer.reset()
-        swap_board_if_2p(observation) # 
-        while not env.done:
-            moves += 1
-            action = my_dqn_agent_exploring(observation, env.configuration)
-            next_observation, reward, done, info = trainer.step(action)
-            swap_board_if_2p(next_observation)
-            reward -= 0.5
-            memory.add((observation.board, action, reward, next_observation.board))
-            experiences = memory.sample(batch)
-            experiences_tensor = raw2tensor(experiences)
-            train_step(*experiences_tensor)
-            observation = next_observation
-        print(template.format(epoch+1, EPOCHS, total_epochs, train_loss.result(), moves))
-    
-        train_loss.reset_states()
-        # env.render(mode="human", width=100, height=90, header=False, controls=False)
-    model.save_weights(weights_file_save)
-    
-    # Playing versus random
-    print("LETS PLAY\n")
-    play(my_dqn_agent, 'random', render = False)
-    play(my_dqn_agent, 'negamax', render = False)
-    # play(my_dqn_agent, my_dqn_agent, render = False)
-print("YOU PLAY NOW! YOU CAN WIN!!!!")
-try:
-    play(my_me, my_dqn_agent)
-    # play(my_me, 'negamax')
-except KeyError:
-    pass
+        template = "Epoch {:02}/{}({}), Loss: {}, Moves: {}"
+        # for epoch in tqdm.tqdm(range(EPOCHS)):
+        for epoch in range(EPOCHS):
+            total_epochs += 1
+            moves = 0
+            done = False
+            trainer = choice([trainer1p, trainer2p])
+            observation = trainer.reset()
+            swap_board_if_2p(observation) # 
+            while not env.done:
+                moves += 1
+                action = my_dqn_agent_exploring(observation, env.configuration, lets_explore)
+                next_observation, reward, done, info = trainer.step(action)
+                swap_board_if_2p(next_observation)
+                reward -= 0.5
+                memory.add((observation.board, action, reward, next_observation.board))
+                experiences = memory.sample(batch)
+                experiences_tensor = raw2tensor(experiences)
+                train_step(*experiences_tensor)
+                observation = next_observation
+            print(template.format(epoch+1, EPOCHS, total_epochs, train_loss.result(), moves))
+        
+            train_loss.reset_states()
+            # env.render(mode="human", width=100, height=90, header=False, controls=False)
+        model.save_weights(weights_file_save_path)
+        
+        # Playing versus random
+        print("LETS PLAY\n")
+        start_match(my_dqn_agent, 'random', render = False)
+        start_match(my_dqn_agent, 'negamax', render = False)
+        # start_match(my_dqn_agent, my_dqn_agent, render = False)
+
+def play():
+    print("YOU PLAY NOW! YOU CAN WIN!!!!")
+    try:
+        start_match(my_me, my_dqn_agent)
+        # start_match(my_me, 'negamax')
+    except KeyError:
+        pass
+
+def analyze():
+    # Analyze phase
+    trainer1p = env.train([None, my_dqn_agent])
+    observation = trainer1p.reset()
+    swap_board_if_2p(observation)
+    obs_net = obs2input(observation.board)
+    qvalues_tensor = model(obs_net)
+    qvalues = qvalues_tensor.numpy().squeeze()
+    advantage = (qvalues - qvalues.mean()) / qvalues.var()
+    act = model.act(qvalues_tensor)
+    plt.bar(range(1, conf.columns+1), advantage)
+    plt.show()
+
+
+if __name__ == "__main__":
+    weights_file_save_path = load_model(model)
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "analyze":
+            analyze()
+        elif sys.argv[1] == "play":
+            play()
+        else:
+            train(weights_file_save_path)
+    else:
+        train(weights_file_save_path)
